@@ -67,5 +67,5 @@ jobs:
           done
           cosign sign --yes ${images}
           cosign verify ${images} \
-          --certificate-identity=https://github.com/sheurich/boulder/.github/workflows/build.yaml@refs/heads/main \
+          --certificate-identity=https://github.com/sheurich/boulder-docker/.github/workflows/build.yaml@refs/heads/main \
           --certificate-oidc-issuer=https://token.actions.githubusercontent.com
