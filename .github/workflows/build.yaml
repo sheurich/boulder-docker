@@ -3,17 +3,37 @@ on:
   push:
     branches: [main]
 
-jobs:
-  build-image:
-    runs-on: ubuntu-latest
+env:
+  REGISTRY_IMAGE: ghcr.io/sheurich/boulder
 
+jobs:
+  build:
     permissions:
       contents: read
       packages: write
       id-token: write # needed for signing the images with GitHub OIDC Token
 
-    name: build-image
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+
+    name: Build and Push container images (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+
     steps:
+      - name: Prepare
+        id: prepare
+        run: |
+          platform=${{ matrix.platform }}
+          platform_pair=${platform//\//-}
+          echo "PLATFORM_PAIR=${platform_pair}" >> $GITHUB_ENV
+          echo "::set-output name=platform_pair::${platform_pair}"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -27,6 +47,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          platforms: ${{ matrix.platform }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -38,38 +60,128 @@ jobs:
       - id: docker_meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/sheurich/boulder
-          tags: type=sha,format=long
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Get Git commit timestamps
         id: timestamp
         run: echo "timestamp=$(git log -1 --pretty=%ct)" >> $GITHUB_OUTPUT
 
-      - name: Build and Push container images
+      - name: Build and push by digest
+        id: build-and-push
+        uses: docker/build-push-action@v6
         env:
           SOURCE_DATE_EPOCH: ${{ steps.timestamp.outputs.timestamp }}
-        uses: docker/build-push-action@v6
-        id: build-and-push
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          build-args: |
+            TARGETPLATFORM=${{ matrix.platform }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          # Use GitHub Actions' built-in cache for Docker layers
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.prepare.outputs.platform_pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Scan for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_IMAGE }}:latest
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+
+  merge:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # List all digests for debugging
+          echo "Found digests:"
+          ls -la
+
+          # Create manifest list with all tags
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "${{ steps.meta.outputs.json }}") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' $(cat *))
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:latest
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Generate SBOM
+        run: |
+          cosign generate-sbom ${{ env.REGISTRY_IMAGE }}:latest > sbom.json
+          cosign attach sbom ${{ env.REGISTRY_IMAGE }}:latest --sbom sbom.json
 
       - name: Sign and verify the images with GitHub OIDC Token
-        env:
-          DIGEST: ${{ steps.build-and-push.outputs.digest }}
-          TAGS: ${{ steps.docker_meta.outputs.tags }}
         run: |
-          images=""
-          for tag in ${TAGS}; do
-            images+="${tag}@${DIGEST} "
+          set -e
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            echo "Signing image: $tag"
+            cosign sign --yes ${tag} || { echo "Signing failed for ${tag}"; exit 1; }
+            
+            echo "Verifying image: $tag"
+            CERT_IDENTITY="https://github.com/${GITHUB_WORKFLOW_REF}"
+            CERT_ISSUER="https://token.actions.githubusercontent.com"
+            cosign verify ${tag} \
+              --certificate-identity=${CERT_IDENTITY} \
+              --certificate-oidc-issuer=${CERT_ISSUER} || { echo "Verification failed for ${tag}"; exit 1; }
           done
-          cosign sign --yes ${images}
-
-          CERT_IDENTITY="https://github.com/${GITHUB_WORKFLOW_REF}"
-          CERT_ISSUER="https://token.actions.githubusercontent.com"
-          cosign verify ${images} \
-            --certificate-identity=${CERT_IDENTITY} \
-            --certificate-oidc-issuer=${CERT_ISSUER}
