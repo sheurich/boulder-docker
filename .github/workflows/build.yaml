@@ -42,11 +42,12 @@ jobs:
           tags: type=sha,format=long
 
       - name: Get Git commit timestamps
-        run: echo "TIMESTAMP=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
+        id: timestamp
+        run: echo "timestamp=$(git log -1 --pretty=%ct)" >> $GITHUB_OUTPUT
 
       - name: Build and Push container images
         env:
-          SOURCE_DATE_EPOCH: ${{ env.TIMESTAMP }}
+          SOURCE_DATE_EPOCH: ${{ steps.timestamp.outputs.timestamp }}
         uses: docker/build-push-action@v6
         id: build-and-push
         with:
@@ -60,6 +61,11 @@ jobs:
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
           TAGS: ${{ steps.docker_meta.outputs.tags }}
+          REPO: ${GITHUB_REPOSITORY}
+          WORKFLOW: ${GITHUB_WORKFLOW}
+          REF: ${GITHUB_REF#refs/heads/}
+          ID: "https://github.com/${REPO}/.github/workflows/${WORKFLOW}@${GITHUB_REF}"
+          ISSUER: "https://token.actions.githubusercontent.com"
         run: |
           images=""
           for tag in ${TAGS}; do
@@ -67,5 +73,5 @@ jobs:
           done
           cosign sign --yes ${images}
           cosign verify ${images} \
-          --certificate-identity=https://github.com/sheurich/boulder-docker/.github/workflows/build.yaml@refs/heads/main \
-          --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+            --certificate-identity=${ID} \
+            --certificate-oidc-issuer=${ISSUER}
