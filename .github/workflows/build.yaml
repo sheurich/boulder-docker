@@ -61,17 +61,15 @@ jobs:
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
           TAGS: ${{ steps.docker_meta.outputs.tags }}
-          REPO: ${GITHUB_REPOSITORY}
-          WORKFLOW: ${GITHUB_WORKFLOW}
-          REF: ${GITHUB_REF#refs/heads/}
-          ID: "https://github.com/${REPO}/.github/workflows/${WORKFLOW}@${GITHUB_REF}"
-          ISSUER: "https://token.actions.githubusercontent.com"
         run: |
           images=""
           for tag in ${TAGS}; do
             images+="${tag}@${DIGEST} "
           done
           cosign sign --yes ${images}
+
+          CERT_IDENTITY="https://github.com/${GITHUB_WORKFLOW_REF}"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
           cosign verify ${images} \
-            --certificate-identity=${ID} \
-            --certificate-oidc-issuer=${ISSUER}
+            --certificate-identity=${CERT_IDENTITY} \
+            --certificate-oidc-issuer=${CERT_ISSUER}
