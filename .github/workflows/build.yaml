@@ -85,8 +85,9 @@ jobs:
           labels: ${{ steps.docker_meta.outputs.labels }}
           build-args: |
             TARGETPLATFORM=${{ matrix.platform }}
+          tags: |
+            ${{ steps.docker_meta.outputs.tags }}  # using metadata-action output correctly
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
-          # Use GitHub Actions' built-in cache for Docker layers
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
@@ -147,6 +148,9 @@ jobs:
           tags: |
             type=sha,format=long
             type=raw,value=latest
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
