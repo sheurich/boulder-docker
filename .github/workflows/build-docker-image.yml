@@ -1,0 +1,130 @@
+name: Build Multi-Arch Docker Image with Go Versions
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/boulder-docker
+
+jobs:
+  # -----------------------------------------------------------------
+  # Job 1: Prepare the Go versions matrix from the JSON file
+  # -----------------------------------------------------------------
+  setup:
+    name: Prepare Go Version Matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      go_versions: ${{ steps.get-versions.outputs.result }}
+      boulder_version: ${{ steps.get-boulder-version.outputs.result }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Go versions from JSON file
+        id: get-versions
+        run: echo "result=$(jq -c '.release' .github/go-versions.json)" >> $GITHUB_OUTPUT
+
+      - name: Read Boulder version from file
+        id: get-boulder-version
+        run: echo "result=$(cat .github/boulder-version.txt | tr -d '\n')" >> $GITHUB_OUTPUT
+
+  # -----------------------------------------------------------------
+  # Job 2: Build arch-specific images in parallel for each Go version
+  # -----------------------------------------------------------------
+  build:
+    name: Build Go ${{ matrix.go-version }} for ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    needs: setup
+    strategy:
+      fail-fast: false
+      # This matrix creates a parallel job for every combination
+      # of Go version and architecture.
+      matrix:
+        go-version: ${{ fromJSON(needs.setup.outputs.go_versions) }}
+        arch: [amd64, arm64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🚀 Build and push arch-specific image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # Each job builds only its assigned platform
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          build-args: |
+            GO_VERSION=${{ matrix.go-version }}
+            BOULDER_VERSION=${{ needs.setup.outputs.boulder_version }}
+          # A unique temporary tag is crucial for the merge job
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.go-version }}-${{ matrix.arch }}
+          # Cache scoped per Go version and architecture to prevent conflicts
+          cache-from: type=gha,scope=${{ matrix.go-version }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.go-version }}-${{ matrix.arch }}
+          # Supply chain security: generate SBOM and provenance attestations
+          provenance: true
+          sbom: true
+
+  # -----------------------------------------------------------------
+  # Job 3: Merge images into multi-arch manifests, one for each Go version
+  # -----------------------------------------------------------------
+  merge-and-push:
+    name: Push Multi-Arch Manifest for Go ${{ matrix.go-version }}
+    runs-on: ubuntu-24.04
+    # This job starts only after all parallel build jobs have succeeded
+    needs: [setup, build]
+    strategy:
+      fail-fast: false
+      # Create a parallel merge job for each Go version
+      matrix:
+        go-version: ${{ fromJSON(needs.setup.outputs.go_versions) }}
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for final tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # Creates Go-version-specific tags, e.g., 'latest-go1.25.0'
+          tags: |
+            type=sha,suffix=-go${{ matrix.go-version }}
+            type=raw,value=latest-go${{ matrix.go-version }},enable={{is_default_branch}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: ✨ Create and push multi-arch manifest
+        run: |
+          echo "Merging images for Go version ${{ matrix.go-version }}"
+
+          echo '${{ steps.meta.outputs.json }}' | jq -r '.tags[]' | while read -r tag; do
+            echo "Creating manifest for: $tag"
+            docker buildx imagetools create -t "$tag" \
+              ${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.go-version }}-amd64 \
+              ${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.go-version }}-arm64
+          done
