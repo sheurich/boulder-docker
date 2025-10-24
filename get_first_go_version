@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# Exit immediately if a command exits with a non-zero status, an undefined variable is used, or a command in a pipeline fails
+set -euo pipefail
+
+# Check if a release tag is provided as an argument
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 <release_tag>"
+  exit 1
+fi
+
+# Variables
+REPO="letsencrypt/boulder"
+FILE_PATH=".github/workflows/release.yml"
+RELEASE_TAG="$1"
+FILE_URL="https://raw.githubusercontent.com/${REPO}/${RELEASE_TAG}/${FILE_PATH}"
+
+# Download the release.yml file and extract the first GO_VERSION from the matrix using yq
+GO_VERSION=$(curl -fsSL "${FILE_URL}" | yq '.jobs.push-release.strategy.matrix.GO_VERSION[0]')
+
+# Output the first GO_VERSION
+echo "${GO_VERSION}"

@@ -1,0 +1,13 @@
+#!/bin/sh
+# build-boulder
+# assumes that this script is run from the root directory of the Boulder repo
+
+# these variables are consumed by the Makefile
+BUILD_ID="${BUILD_ID:-}"
+BUILD_HOST="${BUILD_HOST:-}"
+BUILD_TIME="${BUILD_TIME:-}"
+
+make \
+    BUILD_ID="$BUILD_ID" \
+    BUILD_HOST="$BUILD_HOST" \
+    BUILD_TIME="$BUILD_TIME"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# run-local-build
+
+./build-boulder-image release-2025-02-04
+docker run --rm boulder:release-2025-02-04 --version

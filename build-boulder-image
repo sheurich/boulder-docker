@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# build-boulder-image
+set -euo pipefail
+
+BOULDER_RELEASE_TAG="${1:-}"
+
+if [ -z "$BOULDER_RELEASE_TAG" ]; then
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "Error: 'gh' command not found."
+        exit 1
+    fi
+    echo "No tag provided. Retrieving latest release tag..."
+    BOULDER_RELEASE_TAG="$(gh api repos/letsencrypt/boulder/releases/latest --jq '.tag_name')"
+fi
+
+echo "Using tag: $BOULDER_RELEASE_TAG"
+
+echo "Building Docker image..."
+docker build --progress=plain \
+    --tag boulder:"${BOULDER_RELEASE_TAG}" \
+    --build-arg BOULDER_RELEASE_TAG="$BOULDER_RELEASE_TAG" \
+    --file build-boulder.dockerfile .
+
+# # Determine the proper checksum command:
+# if command -v sha256sum >/dev/null 2>&1; then
+#     CHECKSUM_CMD="sha256sum"
+# elif command -v shasum >/dev/null 2>&1; then
+#     CHECKSUM_CMD="shasum -a 256"
+# else
+#     echo "Error: Neither sha256sum nor shasum command found."
+#     exit 1
+# fi
+
+# # Print a table of filenames and sha256 checksums in boulder/bin/**
+# echo "Listing $BOULDER_SRC/bin/* checksums..."
+# if [ -d "$BOULDER_SRC/bin" ]; then
+#     for f in "$BOULDER_SRC"/bin/*; do
+#         [ -f "$f" ] && $CHECKSUM_CMD "$f"
+#     done
+# else
+#     echo "No $BOULDER_SRC/bin directory found."
+# fi
+
+# echo "Done."

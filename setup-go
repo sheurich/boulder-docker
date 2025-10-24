@@ -1,0 +1,17 @@
+#!/bin/sh -x
+
+# extract GO_VERSION from the release.yml file
+GO_VERSION=$(
+    grep -A2 'GO_VERSION:' .github/workflows/release.yml |
+        grep -v '^--$' |
+        grep -E '^[[:space:]]*-' |
+        sed -E 's/^[[:space:]]*-[[:space:]]*"([^"]+)".*$/\1/'
+)
+echo "Using Go version: $GO_VERSION"
+
+# install Boulder release version of Go
+# https://go.dev/doc/manage-install
+GO="go${GO_VERSION}"
+go install golang.org/dl/"$GO"@latest
+"$GO" download
+ln -sf "$(which "$GO")" "$(which go)"
